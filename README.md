@@ -20,14 +20,16 @@ GeoTDM demonstrates strong performance in modeling geometric trajectories across
 ![Overview](assets/framework.png "Overview")
 
 ## Dependencies
-We use `python==3.8.18` for our experiments with the following core packages:
+We use `python==3.9.21` for our experiments with the following core packages:
 ```
-torch==1.13.0
-torch-geometric==2.4.0
-scikit-learn==1.3.2
-networkx==3.1
-pandas==2.0.3
-einops==0.7.0
+torch==2.4.0
+torch-geometric==2.6.1
+scikit-learn==1.6.0
+networkx==3.2.1
+pandas==2.2.3
+einops==0.8.1
+torch-scatter==2.1.2
+torch-sparse==0.6.18
 ```
 Other packages like `wandb`, `torch-scatter`, `torch-sparse`, `torch-kmeans` are also recommended to install for full functionality.
 
@@ -41,11 +43,7 @@ Generate the dataset by running `gen_data.sh` under `datasets/datagen` folder.
 #### Conditional Generation
 Training, inference, and evaluation (all in one script):
 ```python
-python -m torch.distributed.launch \
-    --nproc_per_node=4 \
-    --master_port 16888 \
-    experiments/nbody_train.py \
-    --train_yaml_file configs/nbody_train_cond.yaml
+torchrun --nproc_per_node=4 --master_port 16888 experiments/nbody_train.py --train_yaml_file configs/nbody_train_cond.yaml
 ```
 
 By default, we use 4 GPUs for training. You can change the number of GPUs by modifying `--nproc_per_node`.
@@ -54,11 +52,7 @@ You can also enable `wandb` to monitor training by changing `no_wandb` to `False
 #### Unconditional Generation
 Training:
 ```python
-python -m torch.distributed.launch \
-    --nproc_per_node=4 \
-    --master_port 16888 \
-    experiments/nbody_train.py \
-    --train_yaml_file configs/nbody_train_uncond.yaml
+torchrun --nproc_per_node=4 --master_port 16888  experiments/nbody_train.py --train_yaml_file configs/nbody_train_uncond.yaml
 ```
 Inference:
 ```python
@@ -78,21 +72,13 @@ Download the MD17 dataset in `.npz` format from [here](http://www.sgdml.org/#dat
 #### Conditional Generation
 Training, inference, and evaluation (all in one script):
 ```python
-python -m torch.distributed.launch \
-    --nproc_per_node=4 \
-    --master_port 16888 \
-    experiments/md17_train.py \
-    --train_yaml_file configs/md17_train_cond.yaml
+torchrun --nnodes=1 --nproc_per_node=4 --master_port 16888 experiments/md17_train.py --train_yaml_file configs/md17_train_cond.yaml
 ```
 
 #### Unconditional Generation
 Training:
 ```python
-python -m torch.distributed.launch \
-    --nproc_per_node=4 \
-    --master_port 16888 \
-    experiments/md17_train.py \
-    --train_yaml_file configs/md17_train_uncond.yaml
+torchrun --nproc_per_node=4 --master_port 16888 experiments/md17_train.py --train_yaml_file configs/md17_train_uncond.yaml
 ```
 Inference:
 ```python
@@ -112,11 +98,7 @@ Then move the preprocessed files in the folder `processed_data_diverse` into `da
 #### Conditional Generation
 Training, inference, and evaluation (all in one script):
 ```python
-python -m torch.distributed.launch \
-    --nproc_per_node=4 \
-    --master_port 16888 \
-    experiments/eth_train_new.py \
-    --train_yaml_file configs/eth_train_new.yaml
+torchrun --nproc_per_node=4 --master_port 16888 experiments/eth_train_new.py --train_yaml_file configs/eth_train_new.yaml
 ```
 
 ## Generated Samples
@@ -138,7 +120,7 @@ Please consider citing our work if you find it useful:
 
 ## Contact
 
-If you have any question, welcome to contact me at:
+If you have any question, contact to:
 
 Jiaqi Han: jiaqihan@stanford.edu
 

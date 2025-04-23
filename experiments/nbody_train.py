@@ -46,13 +46,29 @@ def run(rank, world_size, args):
     # Load dataset
     dataset_train = NBody(**config.data.train)
     dataset_val = NBody(**config.data.val)
-
+    """
     if world_size > 1:
         sampler_train = DistributedSampler(dataset_train)
         sampler_val = DistributedSamplerNoDuplicate(dataset_val, shuffle=False, drop_last=False)
     else:
         sampler_train = None
         sampler_val = None
+   """
+    # Set device
+    if torch.cuda.is_available():
+        device = torch.device(f'cuda:{rank}')
+        torch.cuda.set_device(device)
+    else:
+        device = torch.device('cpu')
+
+    # Initialize the process group
+    torch.distributed.init_process_group(
+        backend="nccl" if torch.cuda.is_available() else "gloo",
+        init_method='env://'
+    )
+
+    sampler_train = DistributedSampler(dataset_train)
+    sampler_val = DistributedSamplerNoDuplicate(dataset_val, shuffle=False, drop_last=False)
 
     dataloader_train = DataLoader(dataset_train, batch_size=config.train.batch_size // world_size,
                                   shuffle=(sampler_train is None), sampler=sampler_train, pin_memory=True)
