@@ -15,6 +15,7 @@ import os
 import shutil
 import pickle
 import sys
+import gc
 sys.path.append('./')
 
 from experiments.fixddp import DistributedSamplerNoDuplicate
@@ -61,16 +62,12 @@ def run(rank, world_size, args):
             init_method='env://'
             )
 
-    """
     if world_size > 1:
         sampler_train = DistributedSampler(dataset_train)
         sampler_val = DistributedSamplerNoDuplicate(dataset_val, shuffle=False, drop_last=False)
     else:
         sampler_train = None
         sampler_val = None
-    """
-    sampler_train = DistributedSampler(dataset_train)
-    sampler_val = DistributedSamplerNoDuplicate(dataset_val, shuffle=False, drop_last=False)
 
     dataloader_train = DataLoader(dataset_train, batch_size=config.train.batch_size // world_size,
                                   shuffle=(sampler_train is None), sampler=sampler_train, pin_memory=True)
@@ -117,7 +114,8 @@ def run(rank, world_size, args):
             # print(f'Start epoch {epoch}')
             progress_bar.set_description(f"Epoch {epoch}")
         denoise_network.train()
-        sampler_train.set_epoch(epoch)
+        if sampler_train is not None:
+            sampler_train.set_epoch(epoch)
 
         # Training
 
@@ -177,34 +175,35 @@ def run(rank, world_size, args):
             val_nll_epoch, val_mse_epoch = torch.zeros(1).to(rank), torch.zeros(1).to(rank)
             counter = torch.zeros(1).to(rank)
 
-            for step, data in enumerate(dataloader_val):
-                data = data.to(rank)
-                model_kwargs = {'h': data.h,
-                                'edge_index': data.edge_index,
-                                'edge_attr': data.edge_attr,
-                                'batch': data.batch}
-                x_start = data.x
-                if diffusion.mode == 'cond':
-                    # Construct cond mask
-                    cond_mask = torch.zeros(1, 1, x_start.size(-1)).to(x_start)
-                    for interval in config.train.cond_mask:
-                        cond_mask[..., interval[0]: interval[1]] = 1
-                    model_kwargs['cond_mask'] = cond_mask
-                    model_kwargs['x_given'] = x_start
-                    x_start_ = x_start[..., ~cond_mask.view(-1).bool()]
-                else:
-                    model_kwargs['x_given'] = x_start
-                    x_start_ = x_start[..., :config.train.tot_len]
+            with torch.no_grad():
+                for step, data in enumerate(dataloader_val):
+                    data = data.to(rank)
+                    model_kwargs = {'h': data.h,
+                                    'edge_index': data.edge_index,
+                                    'edge_attr': data.edge_attr,
+                                    'batch': data.batch}
+                    x_start = data.x
+                    if diffusion.mode == 'cond':
+                        # Construct cond mask
+                        cond_mask = torch.zeros(1, 1, x_start.size(-1)).to(x_start)
+                        for interval in config.train.cond_mask:
+                            cond_mask[..., interval[0]: interval[1]] = 1
+                        model_kwargs['cond_mask'] = cond_mask
+                        model_kwargs['x_given'] = x_start
+                        x_start_ = x_start[..., ~cond_mask.view(-1).bool()]
+                    else:
+                        model_kwargs['x_given'] = x_start
+                        x_start_ = x_start[..., :config.train.tot_len]
 
-                val_results = diffusion.calc_bpd_loop(x_start=x_start_, model_kwargs=model_kwargs)
-                total_bpd = val_results['total_bpd']  # [BN]
-                mse = val_results['mse'].mean(dim=1)  # [BN, T] -> [BN]
-                total_bpd = global_add_pool(total_bpd, data.batch)  # [B]
-                mse = global_mean_pool(mse, data.batch)  # [B]
+                    val_results = diffusion.calc_bpd_loop(x_start=x_start_, model_kwargs=model_kwargs)
+                    total_bpd = val_results['total_bpd']  # [BN]
+                    mse = val_results['mse'].mean(dim=1)  # [BN, T] -> [BN]
+                    total_bpd = global_add_pool(total_bpd, data.batch)  # [B]
+                    mse = global_mean_pool(mse, data.batch)  # [B]
 
-                val_nll_epoch += total_bpd.sum()
-                val_mse_epoch += mse.sum()
-                counter += total_bpd.size(0)
+                    val_nll_epoch += total_bpd.sum()
+                    val_mse_epoch += mse.sum()
+                    counter += total_bpd.size(0)
 
             val_nll_epoch = gather_across_gpus(val_nll_epoch, reduce_placeholder).sum().item()
             val_mse_epoch = gather_across_gpus(val_mse_epoch, reduce_placeholder).sum().item()
@@ -228,6 +227,9 @@ def run(rank, world_size, args):
                     torch.save(denoise_network.state_dict(),
                                os.path.join(output_path, f'ckpt_best.pt'))
 
+            gc.collect()
+            torch.cuda.empty_cache()
+
         # Save model
         if rank == 0 and config.train.save_model:
             if epoch % config.train.save_every_epoch == 0:
@@ -240,6 +242,8 @@ def run(rank, world_size, args):
             dist.barrier()
         if rank == 0:
             progress_bar.update(1)
+        print(
+            f"[Rank {rank}] Epoch {epoch} | Allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB | Reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
 
     # Start testing
     if config.train.final_test and diffusion.mode == 'cond':
@@ -250,6 +254,7 @@ def run(rank, world_size, args):
             sampler = DistributedSamplerNoDuplicate(test_dataset, shuffle=False, drop_last=False)
         else:
             sampler = None
+
         test_dataloader = DataLoader(test_dataset, batch_size=config.train.eval_batch_size // world_size,
                                      shuffle=False, sampler=sampler)
 

@@ -18,6 +18,7 @@ class MD17Traj(TrajDataset):
         'toluene': 'md17_toluene.npz',
         'uracil': 'md17_uracil.npz',
         'paracetamol': 'paracetamol_dft.npz',
+        'alanine_dipeptide':'alanine_dipeptide_nve.npz',
     }
     _lambda = 1.6
     fc = False  # set to true will lead to better performance but slower training/inference
