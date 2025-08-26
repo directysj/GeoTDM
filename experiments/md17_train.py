@@ -105,11 +105,32 @@ def run(rank, world_size, args):
 
     best_val_nll, best_val_mse = 1e10, 1e10
     reduce_placeholder = CatMetric()
+    patience = config.train.early_stop_patience  # e.g., 10
+    early_stop_counter = 0
+    early_stop = False
+
+    ckpt_last_path = os.path.join(output_path, "ckpt_last.pt")
+
+    if os.path.exists(ckpt_last_path):
+        print(f"Resuming training from {ckpt_last_path}")
+        checkpoint = torch.load(ckpt_last_path, map_location=f"cuda:{rank}")
+        denoise_network.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = checkpoint["epoch"] + 1
+        best_val_nll = checkpoint.get("best_val_nll", float('inf'))
+        best_val_mse = checkpoint.get("best_val_mse", float('inf'))
+        early_stop_counter = checkpoint.get("early_stop_counter", 0)
+    else:
+        print("Starting training from scratch.")
+        start_epoch = 1
 
     if rank == 0:
         progress_bar = tqdm(total=num_epochs)
 
-    for epoch in range(1, num_epochs + 1):
+    for epoch in range(start_epoch, num_epochs + 1):
+        if early_stop:  # <---- break if triggered
+            print(f"Early stopping triggered at epoch {epoch - 1}")
+            break
         if rank == 0:
             # print(f'Start epoch {epoch}')
             progress_bar.set_description(f"Epoch {epoch}")
@@ -117,7 +138,7 @@ def run(rank, world_size, args):
         if sampler_train is not None:
             sampler_train.set_epoch(epoch)
 
-        # Training
+        # Training started...
 
         train_loss_epoch, counter = torch.zeros(1).to(rank), torch.zeros(1).to(rank)
 
@@ -216,7 +237,7 @@ def run(rank, world_size, args):
                 wandb.log({"Val nll": val_nll_epoch}, commit=False)
                 wandb.log({"Val mse": val_mse_epoch}, commit=True)
 
-                better = False
+                better = False  # By Default Assumption is the model
 
                 if val_nll_epoch < best_val_nll:
                     best_val_nll = val_nll_epoch
@@ -224,26 +245,45 @@ def run(rank, world_size, args):
                 if val_mse_epoch < best_val_mse:
                     best_val_mse = val_mse_epoch
                 if better:
-                    torch.save(denoise_network.state_dict(),
-                               os.path.join(output_path, f'ckpt_best.pt'))
+                    early_stop_counter = 0   # reset patience
+                    torch.save(denoise_network.state_dict(), os.path.join(output_path, f'ckpt_best.pt'))
+                else:
+                    early_stop_counter += 1
+                    print(f"No improvement. Early stop counter: {early_stop_counter}/{patience}")
+                    if early_stop_counter >= patience:
+                        print("Early stopping criterion met.")
+                        early_stop = True
 
             gc.collect()
             torch.cuda.empty_cache()
 
-        # Save model
+        # Save model with full checkpoint info
         if rank == 0 and config.train.save_model:
             if epoch % config.train.save_every_epoch == 0:
-                torch.save(denoise_network.state_dict(),
-                           os.path.join(output_path, f'ckpt_{epoch}.pt'))
-            torch.save(denoise_network.state_dict(),
-                       os.path.join(output_path, f'ckpt_last.pt'))
+                torch.save({
+                    "epoch": epoch,
+                    "model_state_dict": denoise_network.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_val_nll": best_val_nll,
+                    "best_val_mse": best_val_mse,
+                    "early_stop_counter": early_stop_counter,
+                }, os.path.join(output_path, f'ckpt_{epoch}.pt'))
+
+            # always save last checkpoint
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": denoise_network.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_val_nll": best_val_nll,
+                "best_val_mse": best_val_mse,
+                "early_stop_counter": early_stop_counter,
+            }, ckpt_last_path)
 
         if world_size > 1:
             dist.barrier()
         if rank == 0:
             progress_bar.update(1)
-        print(
-            f"[Rank {rank}] Epoch {epoch} | Allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB | Reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
+            print(f"[Rank {rank}] Epoch {epoch} | Allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB | Reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
 
     # Start testing
     if config.train.final_test and diffusion.mode == 'cond':
